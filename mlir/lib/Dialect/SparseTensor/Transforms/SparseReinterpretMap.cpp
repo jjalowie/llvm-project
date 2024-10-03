@@ -502,7 +502,7 @@ private:
     for (const AffineExpr l : order.getResults()) {
       unsigned loopId = llvm::cast<AffineDimExpr>(l).getPosition();
       auto itTp =
-          linalgOp.getIteratorTypes()[loopId].cast<linalg::IteratorTypeAttr>();
+          cast<linalg::IteratorTypeAttr>(linalgOp.getIteratorTypes()[loopId]);
       if (linalg::isReductionIterator(itTp.getValue()))
         break; // terminate at first reduction
       nest++;
@@ -557,9 +557,7 @@ private:
         unsigned lvl = llvm::cast<AffineDimExpr>(expr).getPosition();
         lvlSeq.push_back(std::make_pair(lvl, lvlSeq.size()));
       }
-      std::sort(lvlSeq.begin(), lvlSeq.end(), [](auto &lhs, auto &rhs) -> bool {
-        return lhs.first < rhs.first;
-      });
+      llvm::sort(lvlSeq, llvm::less_first());
       SmallVector<unsigned> perm =
           llvm::to_vector(llvm::make_second_range(lvlSeq));
       auto dimToLvl = AffineMap::getPermutationMap(perm, linalgOp.getContext());
@@ -573,6 +571,12 @@ private:
       rewriter.modifyOpInPlace(linalgOp, [&]() {
         linalgOp->setOperand(t->getOperandNumber(), dst);
       });
+
+      // Release the transposed form afterwards.
+      // TODO: CSE when used in more than one following op?
+      rewriter.setInsertionPointAfter(linalgOp);
+      rewriter.create<bufferization::DeallocTensorOp>(dst.getLoc(), dst);
+
       return success();
     }
     // Cannot be resolved with a single conversion.
@@ -758,9 +762,10 @@ struct ForeachOpDemapper
     if (numInitArgs != 0) {
       rewriter.setInsertionPointToEnd(body);
       auto yield = llvm::cast<YieldOp>(body->getTerminator());
-      if (auto stt = tryGetSparseTensorType(yield.getResult());
+      if (auto stt = tryGetSparseTensorType(yield.getSingleResult());
           stt && !stt->isIdentity()) {
-        Value y = genDemap(rewriter, stt->getEncoding(), yield.getResult());
+        Value y =
+            genDemap(rewriter, stt->getEncoding(), yield.getSingleResult());
         rewriter.create<YieldOp>(loc, y);
         rewriter.eraseOp(yield);
       }

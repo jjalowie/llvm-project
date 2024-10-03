@@ -157,6 +157,7 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : Triple(T) {
   HasAArch64SVETypes = false;
   HasRISCVVTypes = false;
   AllowAMDGPUUnsafeFPAtomics = false;
+  HasUnalignedAccess = false;
   ARMCDECoprocMask = 0;
 
   // Default to no types using fpret.
@@ -194,6 +195,22 @@ void TargetInfo::resetDataLayout(StringRef DL, const char *ULP) {
 bool
 TargetInfo::checkCFProtectionBranchSupported(DiagnosticsEngine &Diags) const {
   Diags.Report(diag::err_opt_not_valid_on_target) << "cf-protection=branch";
+  return false;
+}
+
+CFBranchLabelSchemeKind TargetInfo::getDefaultCFBranchLabelScheme() const {
+  // if this hook is called, the target should override it to return a
+  // non-default scheme
+  llvm::report_fatal_error("not implemented");
+}
+
+bool TargetInfo::checkCFBranchLabelSchemeSupported(
+    const CFBranchLabelSchemeKind Scheme, DiagnosticsEngine &Diags) const {
+  if (Scheme != CFBranchLabelSchemeKind::Default)
+    Diags.Report(diag::err_opt_not_valid_on_target)
+        << (Twine("mcf-branch-label-scheme=") +
+            getCFBranchLabelSchemeFlagVal(Scheme))
+               .str();
   return false;
 }
 
@@ -403,6 +420,16 @@ void TargetInfo::adjust(DiagnosticsEngine &Diags, LangOptions &Opts) {
   if (Opts.AlignDouble) {
     DoubleAlign = LongLongAlign = 64;
     LongDoubleAlign = 64;
+  }
+
+  // HLSL explicitly defines the sizes and formats of some data types, and we
+  // need to conform to those regardless of what architecture you are targeting.
+  if (Opts.HLSL) {
+    LongWidth = LongAlign = 64;
+    if (!Opts.NativeHalfType) {
+      HalfFormat = &llvm::APFloat::IEEEsingle();
+      HalfWidth = HalfAlign = 32;
+    }
   }
 
   if (Opts.OpenCL) {

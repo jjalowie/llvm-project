@@ -11,6 +11,7 @@
 
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMapInfoVariant.h"
 #include "llvm/ADT/SetVector.h"
@@ -142,9 +143,19 @@ public:
   /// This function adds an ALLOW entry.
   void allowDialect(StringRef dialectNamespace) {
     Entry::FilterFn filterFn = [=](Operation *op) {
-      return op->getDialect()->getNamespace() == dialectNamespace;
+      return op->getName().getDialectNamespace() == dialectNamespace;
     };
     entries.push_back(Entry{filterFn, Entry::FilterType::ALLOW});
+  }
+
+  /// Deny the given dialect.
+  ///
+  /// This function adds a DENY entry.
+  void denyDialect(StringRef dialectNamespace) {
+    Entry::FilterFn filterFn = [=](Operation *op) {
+      return op->getName().getDialectNamespace() == dialectNamespace;
+    };
+    entries.push_back(Entry{filterFn, Entry::FilterType::DENY});
   }
 
   /// Allow the given ops.
@@ -250,9 +261,9 @@ struct BufferizationOptions {
   using AnalysisStateInitFn = std::function<void(AnalysisState &)>;
   /// Tensor -> MemRef type converter.
   /// Parameters: Value, memory space, func op, bufferization options
-  using FunctionArgTypeConverterFn =
-      std::function<BaseMemRefType(TensorType, Attribute memorySpace,
-                                   func::FuncOp, const BufferizationOptions &)>;
+  using FunctionArgTypeConverterFn = std::function<BaseMemRefType(
+      TensorType, Attribute memorySpace, FunctionOpInterface,
+      const BufferizationOptions &)>;
   /// Tensor -> MemRef type converter.
   /// Parameters: Value, memory space, bufferization options
   using UnknownTypeConverterFn = std::function<BaseMemRefType(
@@ -298,6 +309,11 @@ struct BufferizationOptions {
   /// Specifies whether function boundaries (ops in the func dialect) should be
   /// bufferized or not.
   bool bufferizeFunctionBoundaries = false;
+
+  // Specifies whether to account for parallel regions in RaW analysis. If true,
+  // then writes inside of parallel regions that write to buffers defined
+  // outside of the parallel region will be given a new buffer.
+  bool checkParallelRegions = true;
 
   /// Certain ops have aliasing OpOperand/OpResult invariants (e.g., scf.for).
   /// If this flag is set to `false`, those invariants are no longer enforced
@@ -355,10 +371,6 @@ struct BufferizationOptions {
   // failure to determine memory space for a tensor type).
   DefaultMemorySpaceFn defaultMemorySpaceFn =
       [](TensorType t) -> std::optional<Attribute> { return Attribute(); };
-
-  /// Seed for the analysis fuzzer. If set to `0`, the fuzzer is deactivated.
-  /// Should be used only with `testAnalysisOnly = true`.
-  unsigned analysisFuzzerSeed = 0;
 
   /// If set to `true`, the analysis is skipped. A buffer is copied before every
   /// write. This flag cannot be used together with `testAnalysisOnly = true`.
